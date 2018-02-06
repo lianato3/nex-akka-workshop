@@ -16,9 +16,24 @@ project.configure(children) { proj ->
 
   buildscript {
     repositories {
-      mavenLocal()
+      maven { url 'http://artifactory.ops.traiana.int/artifactory/libs-release' }
+      maven { url 'http://artifactory.ops.traiana.int/artifactory/MicroServices' }
+      maven { url 'http://artifactory.ops.traiana.int/artifactory/libs-release-local' }
       mavenCentral()
     }
+  }
+
+  repositories {
+    maven { url 'http://artifactory.ops.traiana.int/artifactory/libs-release' }
+    maven { url 'http://artifactory.ops.traiana.int/artifactory/MicroServices' }
+    maven {
+      url 'http://artifactory.ops.traiana.int:80/artifactory/libs-snapshot-local'
+      credentials {
+        username = "${artifactory_user}"
+        password = "${artifactory_password}"
+      }
+    }
+    mavenCentral()
   }
 
   apply plugin: 'maven'
