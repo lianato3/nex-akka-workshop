@@ -29,10 +29,6 @@ class ChannelManagerActor extends PersistentActor with ActorLogging {
 
   var channels: Map[String, ActorRef] = Map[String, ActorRef]()
 
-  implicit val ec: ExecutionContextExecutor = context.dispatcher
-
-  implicit val timeout: Timeout = Timeout(5 seconds)
-
   override def receiveCommand: Receive = {
 
     case ChannelManagerActor.AddToChannel(nickname, channelName) =>
@@ -43,7 +39,7 @@ class ChannelManagerActor extends PersistentActor with ActorLogging {
         case None =>
           persist(AddChannel(channelName)) { addChannel =>
             val channel = context.actorOf(ChannelActor.props(addChannel.name))
-            channels = channels ++ Map(channelName -> channel)
+            channels = channels + (channelName -> channel)
             channel forward ChannelActor.JoinChannel(nickname)
           }
       }
@@ -58,7 +54,7 @@ class ChannelManagerActor extends PersistentActor with ActorLogging {
   override def receiveRecover: Receive = {
     case AddChannel(name) =>
       val channel = context.actorOf(ChannelActor.props(name))
-      channels = channels ++ Map(name -> channel)
+      channels = channels  + (name -> channel)
 
     case RecoveryCompleted =>
       log.info("finished channel manager actor")
