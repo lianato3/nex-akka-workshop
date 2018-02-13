@@ -1,6 +1,12 @@
 package com.traiana.nagger.actor
 
 import akka.actor.{Actor, ActorRef, Props}
+import akka.cluster.singleton.{
+  ClusterSingletonManager,
+  ClusterSingletonManagerSettings,
+  ClusterSingletonProxy,
+  ClusterSingletonProxySettings
+}
 import akka.pattern.{ask, pipe}
 import akka.util.Timeout
 import com.traiana.nagger.actor.LoginActor.{LoginFailedResp, LoginRequestSuccessResp, LoginResponse}
@@ -25,9 +31,22 @@ class ApiActor extends Actor {
 
   val loginActor: ActorRef = context.actorOf(Props[LoginActor], "LoginActor")
 
-  val channelManagerActor: ActorRef = context.actorOf(Props[ChannelManagerActor], "ChannelManagerActor")
+  context.actorOf(ClusterSingletonManager.props(singletonProps = Props(classOf[ChannelManagerActor]),
+                                                terminationMessage = UserDetailsActor.End,
+                                                settings = ClusterSingletonManagerSettings(context.system)),
+                  name = "channelManager")
 
-  var tokensToStreams: Map[String, StreamObserver[ListenEvent]] = Map()
+  val channelManagerProxy: ActorRef = context.actorOf(
+    ClusterSingletonProxy.props(singletonManagerPath = s"/user/ApiActor/channelManager",
+                                settings = ClusterSingletonProxySettings(context.system)),
+    name = "channelManagerProxy")
+
+  override def preStart(): Unit = {
+    super.preStart()
+    channelManagerProxy ! ChannelManagerActor.AddApiListener(this.self)
+  }
+
+  var nicknamesToStreams: Map[String, StreamObserver[ListenEvent]] = Map()
 
   case class TokenDetails(nickname: String, streamObserver: StreamObserver[ListenEvent])
 
@@ -48,28 +67,21 @@ class ApiActor extends Actor {
     case JoinLeaveRequest(token, channel, true) =>
       (loginActor ? LoginActor.ValidateToken(token)).mapTo[LoginActor.ValidateSuccessResp] flatMap { vsr =>
         val nickname = vsr.nickname
-        (channelManagerActor ? ChannelManagerActor.AddToChannel(nickname, channel))
-          .mapTo[ChannelActor.ChannelMessages] map { cm =>
-          cm.messages.foreach { message =>
-            tokensToStreams(nickname).onNext(ListenEvent(channel, nickname, message))
-          }
-          Empty
-        }
+        (channelManagerProxy ? ChannelManagerActor.AddToChannel(nickname, channel))
+          .map(_ => Empty)
       } pipeTo sender()
 
     case JoinLeaveRequest(token, channel, false) =>
       (loginActor ? LoginActor.ValidateToken(token)).mapTo[LoginActor.ValidateSuccessResp] flatMap { vsr =>
-        channelManagerActor ? ChannelManagerActor.LeaveChannel(vsr.nickname, channel)
+        (channelManagerProxy ? ChannelManagerActor.LeaveChannel(vsr.nickname, channel))
+          .map(_ => Empty)
       } pipeTo sender()
 
     case MessageRequest(token, channel, message) =>
       (loginActor ? LoginActor.ValidateToken(token)).mapTo[LoginActor.ValidateSuccessResp] flatMap { vsr =>
         val nickname = vsr.nickname
-        (channelManagerActor ? ChannelManagerActor.SendChannelMessage(nickname, channel, message))
-          .mapTo[ChannelActor.MessageRecipients]
-          .map { mr =>
-            mr.sendMessageList.foreach(tokensToStreams(_).onNext(ListenEvent(channel, nickname, message)))
-          }
+        (channelManagerProxy ? ChannelManagerActor.SendChannelMessage(nickname, channel, message))
+          .map(_ => Empty)
       } pipeTo sender()
 
     case (ListenRequest(token), responseObserver) =>
@@ -78,8 +90,25 @@ class ApiActor extends Actor {
       } pipeTo self
 
     case TokenDetails(nickname, streamObserver) =>
-      tokensToStreams = tokensToStreams ++ Map(nickname -> streamObserver)
+      nicknamesToStreams = nicknamesToStreams + (nickname -> streamObserver)
 
+    case ChannelActor.ChannelMessages(nickname, channel, messages) =>
+      nicknamesToStreams.get(nickname) match {
+        case None =>
+        case Some(s) =>
+          messages.foreach { m =>
+            s.onNext(ListenEvent(channel, m.nickname, m.message))
+          }
+      }
+
+    case ChannelActor.MessageRecipients(channel, sendMessageList, message, nickname) =>
+      sendMessageList.foreach { recipient =>
+        nicknamesToStreams.get(recipient) match {
+          case None =>
+          case Some(s) =>
+            s.onNext(ListenEvent(channel, nickname, message))
+        }
+      }
   }
 
 }

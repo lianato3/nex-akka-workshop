@@ -23,6 +23,8 @@ object UserDetailsActor {
   case object InvalidUserResponse                extends UserDetailsResponse
 
   case class User(name: String, pass: String, nickName: String)
+
+  case object End
 }
 
 class UserDetailsActor extends PersistentActor with ActorLogging {
@@ -38,23 +40,26 @@ class UserDetailsActor extends PersistentActor with ActorLogging {
 
   override def receiveCommand: Receive = {
 
-    case AddNewUser(userName, password, nickName) =>
-      users.find(u => u.name == userName && u.pass == password) match {
+    case UserDetailsActor.AddNewUser(userName, password, nickName) =>
+      users.find(u => u.name == userName) match {
         case Some(_) =>
-          sender() ! UserAlreadyExistsResponse
+          sender() ! UserDetailsActor.UserAlreadyExistsResponse
         case None =>
           val newUser = User(userName, password, nickName)
           persist(newUser) { user =>
             users.append(user)
-            sender() ! UserAddedResponse
+            sender() ! UserDetailsActor.UserAddedResponse
           }
       }
 
     case IsValidUser(userName, password) =>
       users.find(u => u.name == userName && u.pass == password) match {
-        case Some(user) => sender() ! ValidUserResponse(user.nickName)
-        case None       => sender() ! InvalidUserResponse
+        case Some(user) => sender() ! UserDetailsActor.ValidUserResponse(user.nickName)
+        case None       => sender() ! UserDetailsActor.InvalidUserResponse
       }
+
+    case UserDetailsActor.End =>
+      log.info("user details actor is terminating")
 
   }
 

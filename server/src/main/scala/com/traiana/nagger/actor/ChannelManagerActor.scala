@@ -1,9 +1,11 @@
 package com.traiana.nagger.actor
 
-import akka.actor.{ActorLogging, ActorRef}
-import akka.persistence.{PersistentActor, RecoveryCompleted}
+import akka.actor.{Actor, ActorLogging, ActorRef}
+import akka.cluster.sharding.{ClusterSharding, ClusterShardingSettings, ShardRegion}
+import akka.pattern.{ask, pipe}
 import akka.util.Timeout
 
+import scala.collection.mutable.ListBuffer
 import scala.concurrent.ExecutionContextExecutor
 import scala.concurrent.duration._
 
@@ -20,45 +22,69 @@ case object ChannelManagerActor {
   case class LeaveChannel(nickname: String, channelName: String)
 
   case class SendChannelMessage(nickname: String, channelName: String, message: String)
+
+  case class AddApiListener(apiActor: ActorRef)
+
+  trait ChannelManagerResponse
+  case object Ack extends ChannelManagerResponse
+
+  case object End
 }
 
-case class AddChannel(name: String)
-case class RemoveChannel(name: String)
+final case class EntityEnvelope(id: String, payload: Any)
+class ChannelManagerActor extends Actor with ActorLogging {
 
-class ChannelManagerActor extends PersistentActor with ActorLogging {
+  implicit val ec: ExecutionContextExecutor = context.dispatcher
 
-  var channels: Map[String, ActorRef] = Map[String, ActorRef]()
+  implicit val timeout: Timeout = Timeout(5 seconds)
 
-  override def receiveCommand: Receive = {
+  var apiListeners: ListBuffer[ActorRef] = ListBuffer()
 
+  val channelRegion: ActorRef = ClusterSharding(context.system).start(
+    typeName = "Channel",
+    entityProps = ChannelActor.props(),
+    settings = ClusterShardingSettings(context.system),
+    extractEntityId = extractEntityId,
+    extractShardId = extractShardId)
+
+  val numberOfShards = 3
+
+  lazy val extractEntityId: ShardRegion.ExtractEntityId = {
+    case EntityEnvelope(id, payload) ⇒ (id.toString, payload)
+  }
+
+  lazy val extractShardId: ShardRegion.ExtractShardId = {
+    case EntityEnvelope(id, _) ⇒ (id.size % numberOfShards).toString
+    case ShardRegion.StartEntity(id) ⇒
+      (id.size % numberOfShards).toString
+  }
+
+  override def receive: Receive = {
     case ChannelManagerActor.AddToChannel(nickname, channelName) =>
-      channels.get(channelName) match {
-        case Some(channel) =>
-          channel forward ChannelActor.JoinChannel(nickname)
+      val cm = channelRegion ? EntityEnvelope(channelName, ChannelActor.JoinChannel(nickname, channelName))
 
-        case None =>
-          persist(AddChannel(channelName)) { addChannel =>
-            val channel = context.actorOf(ChannelActor.props(addChannel.name))
-            channels = channels + (channelName -> channel)
-            channel forward ChannelActor.JoinChannel(nickname)
-          }
-      }
+      cm map (_ => ChannelManagerActor.Ack) pipeTo sender()
+
+      cm map (m => apiListeners.foreach(_ ! m))
 
     case ChannelManagerActor.LeaveChannel(nickname, channelName) =>
-      channels(channelName) forward ChannelActor.LeaveChannel(nickname)
+      (channelRegion ? EntityEnvelope(channelName, ChannelActor.LeaveChannel(nickname, channelName)))
+        .map(_ => ChannelManagerActor.Ack)
+        .pipeTo(sender())
 
     case ChannelManagerActor.SendChannelMessage(nickname, channelName, message) =>
-      channels(channelName) forward ChannelActor.SendChannelMessage(nickname, message)
+      val mr = channelRegion ? EntityEnvelope(channelName,
+                                              ChannelActor.SendChannelMessage(nickname, channelName, message))
+
+      mr map (_ => ChannelManagerActor.Ack) pipeTo sender()
+
+      mr map (m => apiListeners.foreach(_ ! m))
+
+    case ChannelManagerActor.End =>
+      log.info("user details actor is terminating")
+
+    case ChannelManagerActor.AddApiListener(apiActor) =>
+      apiListeners.append(apiActor)
   }
 
-  override def receiveRecover: Receive = {
-    case AddChannel(name) =>
-      val channel = context.actorOf(ChannelActor.props(name))
-      channels = channels  + (name -> channel)
-
-    case RecoveryCompleted =>
-      log.info("finished channel manager actor")
-  }
-
-  override def persistenceId: String = "channel-manager-id"
 }

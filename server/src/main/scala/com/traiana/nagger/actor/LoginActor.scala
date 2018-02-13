@@ -1,6 +1,12 @@
 package com.traiana.nagger.actor
 
 import akka.actor.{Actor, ActorRef, Props}
+import akka.cluster.singleton.{
+  ClusterSingletonManager,
+  ClusterSingletonManagerSettings,
+  ClusterSingletonProxy,
+  ClusterSingletonProxySettings
+}
 import akka.pattern.{ask, pipe}
 import akka.util.Timeout
 import com.traiana.nagger.actor.LoginActor._
@@ -16,22 +22,38 @@ import scala.util.Random
   * Time: 12:44
   */
 object LoginActor {
+
   case class RegisterNewUser(userName: String, password: String, nickname: String)
+
   case class LoginRequest(userName: String, password: String)
+
   case class ValidateToken(token: String)
 
   trait LoginResponse
-  case class LoginRequestSuccessResp(token: String)    extends LoginResponse
+
+  case class LoginRequestSuccessResp(token: String) extends LoginResponse
+
   case class LoginRequestFailure(origSender: ActorRef) extends LoginResponse
-  case class ValidateSuccessResp(nickname: String)     extends LoginResponse
-  case object LoginFailedResp                          extends LoginResponse
+
+  case class ValidateSuccessResp(nickname: String) extends LoginResponse
+
+  case object LoginFailedResp extends LoginResponse
+
 }
 
 class LoginActor extends Actor {
 
   case class UserDetails(token: String, nickname: String, origSender: ActorRef)
 
-  val userDetailsActor: ActorRef = context.actorOf(Props[UserDetailsActor])
+  context.actorOf(ClusterSingletonManager.props(singletonProps = Props(classOf[UserDetailsActor]),
+                                                terminationMessage = UserDetailsActor.End,
+                                                settings = ClusterSingletonManagerSettings(context.system)),
+                  name = "userDetails")
+
+  val userDetailsProxy: ActorRef = context.actorOf(
+    ClusterSingletonProxy.props(singletonManagerPath = s"/user/ApiActor/LoginActor/userDetails",
+                                settings = ClusterSingletonProxySettings(context.system)),
+    name = "userDetailsProxy")
 
   var tokenToNickName: Map[String, String] = Map[String, String]()
 
@@ -42,7 +64,7 @@ class LoginActor extends Actor {
   override def receive: Receive = {
     case RegisterNewUser(userName, password, nickname) =>
       val origSender = sender()
-      userDetailsActor ? UserDetailsActor.AddNewUser(userName, password, nickname) map {
+      userDetailsProxy ? UserDetailsActor.AddNewUser(userName, password, nickname) map {
         case UserDetailsActor.UserAddedResponse =>
           UserDetails(Random.alphanumeric take 10 mkString, nickname, origSender)
 
@@ -53,7 +75,7 @@ class LoginActor extends Actor {
 
     case LoginRequest(userName, password) =>
       val origSender = sender()
-      userDetailsActor ? UserDetailsActor.IsValidUser(userName, password) map {
+      userDetailsProxy ? UserDetailsActor.IsValidUser(userName, password) map {
         case UserDetailsActor.ValidUserResponse(nickname) =>
           UserDetails(Random.alphanumeric take 10 mkString, nickname, origSender)
 

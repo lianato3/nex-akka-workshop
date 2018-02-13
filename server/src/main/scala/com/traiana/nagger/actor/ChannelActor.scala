@@ -2,7 +2,6 @@ package com.traiana.nagger.actor
 
 import akka.actor.{ActorLogging, Props}
 import akka.persistence.{PersistentActor, RecoveryCompleted}
-import com.traiana.nagger.spb.LoginRegisterResponse.Response.Empty
 
 import scala.collection.mutable.ListBuffer
 
@@ -14,61 +13,65 @@ import scala.collection.mutable.ListBuffer
   */
 object ChannelActor {
 
-  case class JoinChannel(nickname: String)
+  case class JoinChannel(nickname: String, channel: String)
 
-  case class LeaveChannel(nickname: String)
+  case class LeaveChannel(nickname: String, channel: String)
 
-  case class SendChannelMessage(nickname: String, message: String)
+  case class SendChannelMessage(nickname: String, channel: String, message: String)
 
   trait ChannelResponse
-  case class MessageRecipients(sendMessageList: List[String]) extends ChannelResponse
-  case class ChannelMessages(messages: ListBuffer[String])    extends ChannelResponse
+  case class MessageRecipients(channel: String, sendMessageList: List[String], message: String, nickname: String)
+      extends ChannelResponse
+  case class ChannelMessages(nickname: String, channel: String, messages: ListBuffer[Message]) extends ChannelResponse
+  case object Ack                                                                              extends ChannelResponse
 
-  def props(channelName: String) = Props(new ChannelActor(channelName))
+  def props() = Props(new ChannelActor())
 
 }
 
 case class AddToChannel(nickname: String)
-case class InternalRemoveFromChannel(nickname: String)
-case class Message(message: String)
+case class RemoveFromChannel(nickname: String)
+case class Message(message: String, nickname: String)
 
-class ChannelActor(name: String) extends PersistentActor with ActorLogging {
+class ChannelActor() extends PersistentActor with ActorLogging {
 
   val subscribers: ListBuffer[String] = ListBuffer()
-  val messages: ListBuffer[String]    = ListBuffer()
+  val messages: ListBuffer[Message]   = ListBuffer()
 
   override def receiveCommand: Receive = {
-    case ChannelActor.JoinChannel(nickname) =>
+    case ChannelActor.JoinChannel(nickname, channel) =>
       persist(AddToChannel(nickname)) { addToChannel =>
         subscribers.append(addToChannel.nickname)
-        sender() ! ChannelActor.ChannelMessages(messages)
+        sender() ! ChannelActor.ChannelMessages(nickname, channel, messages)
       }
 
-    case ChannelActor.LeaveChannel(nickname) =>
-      persist(InternalRemoveFromChannel(nickname)) { removeFromChannel =>
+    case ChannelActor.LeaveChannel(nickname, _) =>
+      persist(RemoveFromChannel(nickname)) { removeFromChannel =>
         subscribers.remove(subscribers.indexOf(removeFromChannel.nickname))
-        sender() ! Empty
+        sender() ! ChannelActor.Ack
       }
 
-    case ChannelActor.SendChannelMessage(nickname, message) =>
-      persist(Message(message)) { m =>
-        messages.append(m.message)
-        sender() ! ChannelActor.MessageRecipients(subscribers.filterNot(_ == nickname).toList)
+    case ChannelActor.SendChannelMessage(nickname, channel, message) =>
+      persist(Message(message, nickname)) { m =>
+        messages.append(m)
+        sender() ! ChannelActor.MessageRecipients(channel,
+                                                  subscribers.filterNot(_ == nickname).toList,
+                                                  m.message,
+                                                  m.nickname)
       }
-
   }
 
   override def receiveRecover: Receive = {
     case AddToChannel(nickname) =>
       subscribers.append(nickname)
-    case InternalRemoveFromChannel(nickname) =>
+    case RemoveFromChannel(nickname) =>
       subscribers.remove(subscribers.indexOf(nickname))
-    case Message(m) =>
+    case m: Message =>
       messages.append(m)
     case RecoveryCompleted =>
-      log.info("finished channel actor")
+      log.info(s"finished channel actor ${context.self.path.name}")
   }
 
-  override def persistenceId: String = s"channel-$name-id"
+  override def persistenceId: String = s"channel-${context.self.path.name}-id"
 
 }
