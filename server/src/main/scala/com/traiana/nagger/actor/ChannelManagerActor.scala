@@ -1,7 +1,7 @@
 package com.traiana.nagger.actor
 
 import akka.actor.{Actor, ActorLogging, ActorRef}
-import akka.cluster.sharding.{ClusterSharding, ClusterShardingSettings, ShardRegion}
+import akka.cluster.sharding.ClusterSharding
 import akka.pattern.{ask, pipe}
 import akka.util.Timeout
 
@@ -40,24 +40,7 @@ class ChannelManagerActor extends Actor with ActorLogging {
 
   var apiListeners: ListBuffer[ActorRef] = ListBuffer()
 
-  val channelRegion: ActorRef = ClusterSharding(context.system).start(
-    typeName = "Channel",
-    entityProps = ChannelActor.props(),
-    settings = ClusterShardingSettings(context.system),
-    extractEntityId = extractEntityId,
-    extractShardId = extractShardId)
-
-  val numberOfShards = 3
-
-  lazy val extractEntityId: ShardRegion.ExtractEntityId = {
-    case EntityEnvelope(id, payload) ⇒ (id.toString, payload)
-  }
-
-  lazy val extractShardId: ShardRegion.ExtractShardId = {
-    case EntityEnvelope(id, _) ⇒ (id.size % numberOfShards).toString
-    case ShardRegion.StartEntity(id) ⇒
-      (id.size % numberOfShards).toString
-  }
+  val channelRegion: ActorRef = ClusterSharding(context.system).shardRegion("ChannelActor")
 
   override def receive: Receive = {
     case ChannelManagerActor.AddToChannel(nickname, channelName) =>

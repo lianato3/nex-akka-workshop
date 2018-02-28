@@ -2,9 +2,10 @@ package com.traiana.nagger.grpc
 
 import akka.actor.{ActorRef, ActorSystem, Props}
 import akka.pattern.ask
+import akka.util.Timeout
 import com.google.protobuf.empty.Empty
 import com.traiana.kit.boot.grpc.GrpcService
-import com.traiana.nagger.actor.ApiActor
+import com.traiana.nagger.actor._
 import com.traiana.nagger.spb.NaggerGrpc.Nagger
 import com.traiana.nagger.spb._
 import io.grpc.stub.StreamObserver
@@ -13,7 +14,6 @@ import org.springframework.stereotype.Service
 
 import scala.concurrent.Future
 import scala.concurrent.duration._
-import akka.util.Timeout
 
 /**
   * Created by IntelliJ IDEA.

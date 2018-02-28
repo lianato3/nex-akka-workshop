@@ -1,12 +1,8 @@
 package com.traiana.nagger.actor
 
 import akka.actor.{Actor, ActorRef, Props}
-import akka.cluster.singleton.{
-  ClusterSingletonManager,
-  ClusterSingletonManagerSettings,
-  ClusterSingletonProxy,
-  ClusterSingletonProxySettings
-}
+import akka.cluster.sharding.{ClusterSharding, ClusterShardingSettings, ShardRegion}
+import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonManagerSettings, ClusterSingletonProxy, ClusterSingletonProxySettings}
 import akka.pattern.{ask, pipe}
 import akka.util.Timeout
 import com.traiana.nagger.actor.LoginActor.{LoginFailedResp, LoginRequestSuccessResp, LoginResponse}
@@ -30,6 +26,26 @@ class ApiActor extends Actor {
   implicit val timeout: Timeout = Timeout(5 seconds)
 
   val loginActor: ActorRef = context.actorOf(Props[LoginActor], "LoginActor")
+
+  val channelRegion: ActorRef = ClusterSharding(context.system).start(
+    typeName = "ChannelActor",
+    entityProps = ChannelActor.props(),
+    settings = ClusterShardingSettings(context.system),
+    extractEntityId = extractEntityId,
+    extractShardId = extractShardId)
+
+  val numberOfShards = 10
+
+  lazy val extractEntityId: ShardRegion.ExtractEntityId = {
+    case EntityEnvelope(id, payload) ⇒ (id.toString, payload)
+  }
+
+  lazy val extractShardId: ShardRegion.ExtractShardId = {
+    case EntityEnvelope(id, _) ⇒ (id.length % numberOfShards).toString
+    case ShardRegion.StartEntity(id) ⇒
+      (id.size % numberOfShards).toString
+  }
+
 
   context.actorOf(ClusterSingletonManager.props(singletonProps = Props(classOf[ChannelManagerActor]),
                                                 terminationMessage = UserDetailsActor.End,
